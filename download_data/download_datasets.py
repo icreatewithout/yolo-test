@@ -80,6 +80,50 @@ def pick_sessions(proxy: str, proxy_scope: str, pool_size: int) -> tuple[request
     return proxied, proxied, f"all requests via proxy {proxy}"
 
 
+
+
+def detect_egress_country(session: requests.Session, timeout: int) -> tuple[str | None, str | None]:
+    """Return (country_code, ip) from public IP geolocation services."""
+    services = [
+        "http://ip-api.com/json/?fields=status,countryCode,query",
+        "https://ipwho.is/",
+    ]
+
+    for url in services:
+        try:
+            response = session.get(url, timeout=timeout)
+            response.raise_for_status()
+            payload = response.json()
+        except requests.RequestException:
+            continue
+
+        if "countryCode" in payload:
+            status = str(payload.get("status", "success")).lower()
+            if status != "success":
+                continue
+            return str(payload.get("countryCode")), str(payload.get("query"))
+
+        if "country_code" in payload:
+            if payload.get("success") is False:
+                continue
+            return str(payload.get("country_code")), str(payload.get("ip"))
+
+    return None, None
+
+
+def validate_foreign_egress(session: requests.Session, timeout: int) -> None:
+    country_code, ip = detect_egress_country(session, timeout)
+    if country_code is None:
+        raise DatasetDownloadError(
+            "Unable to verify proxy egress country. Please check VPN/proxy availability."
+        )
+
+    print(f"[INFO] Proxy egress check: IP={ip}, country={country_code}")
+    if country_code.upper() == "CN":
+        raise DatasetDownloadError(
+            "Proxy egress is CN, not foreign. Please switch VPN/proxy exit node and retry."
+        )
+
 def download_file(
     session: requests.Session,
     url: str,
@@ -277,6 +321,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--download-timeout", type=int, default=120, help="Download request timeout seconds")
     parser.add_argument("--api-timeout", type=int, default=30, help="Zenodo API request timeout seconds")
     parser.add_argument("--pool-size", type=int, default=16, help="HTTP connection pool size")
+
+    parser.add_argument(
+        "--require-foreign-egress",
+        action="store_true",
+        help="Fail fast if proxy egress country is not foreign (e.g., detected as CN)",
+    )
+    parser.add_argument(
+        "--egress-check-timeout",
+        type=int,
+        default=10,
+        help="Timeout seconds for proxy egress verification",
+    )
     parser.add_argument("--skip-discovery", action="store_true", help="Skip Zenodo discovery to reduce startup latency")
     return parser.parse_args()
 
@@ -307,6 +363,9 @@ def main() -> None:
 
     api_session, download_session, mode = pick_sessions(args.proxy, args.proxy_scope, args.pool_size)
     print(f"[INFO] Proxy mode: {mode}")
+
+    if args.require_foreign_egress:
+        validate_foreign_egress(api_session, timeout=args.egress_check_timeout)
 
     if args.print_candidates:
         for dataset in args.datasets:

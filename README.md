@@ -31,14 +31,14 @@ pip install -r requirements.txt
 ## 3. 下载公开数据
 
 ```bash
-# 推荐：API 走代理、文件直连（通常比全量代理更快）
-python download_data/download_datasets.py --datasets risid --proxy-scope api-only
+# 你的场景：走 VPN 代理 127.0.0.1:7890，且要求出口是国外
+python download_data/download_datasets.py --datasets risid deepfish \
+  --proxy http://127.0.0.1:7890 \
+  --proxy-scope all \
+  --require-foreign-egress
 
-# 多个数据集
+# 推荐提速：仅 API 走代理、文件直连（通常更快）
 python download_data/download_datasets.py --datasets risid deepfish plitter --proxy-scope api-only
-
-# 全量走代理（当直连被限制时）
-python download_data/download_datasets.py --datasets risid --proxy-scope all --proxy http://127.0.0.1:7890
 
 # 完全禁用代理
 python download_data/download_datasets.py --datasets risid --proxy-scope off
@@ -47,11 +47,11 @@ python download_data/download_datasets.py --datasets risid --proxy-scope off
 python download_data/download_datasets.py --datasets risid --print-candidates --skip-discovery
 
 # 若公开链接变更，可覆盖下载地址（可重复传入）
-python download_data/download_datasets.py --datasets risid deepfish \\
-  --url-override risid=https://zenodo.org/records/<id>/files/RiSID.zip?download=1 \\
+python download_data/download_datasets.py --datasets risid deepfish \
+  --url-override risid=https://zenodo.org/records/<id>/files/RiSID.zip?download=1 \
   --url-override deepfish=https://your-direct-url/deepfish.zip
 ```
-说明：默认 `--proxy-scope api-only`（API 走代理、文件直连）可显著改善“代理下载慢”；可通过 `--proxy-scope all/off` 切换。另支持 `--chunk-size-mb`、`--skip-discovery` 调优速度。若任一数据集下载失败，脚本返回非 0 退出码，便于批处理/CI 感知失败。
+说明：若要求“请求发起地址是国外”，请使用 `--proxy-scope all --require-foreign-egress`。脚本会在启动时检测出口国家，若检测为 CN 会立即失败并提示切换节点。速度优化可用 `--proxy-scope api-only`、`--chunk-size-mb`、`--skip-discovery`。若任一数据集下载失败，脚本返回非 0 退出码，便于批处理/CI 感知失败。
 
 下载后建议将可用样本统一整理为 YOLO 目录结构：
 - `dataset/images/train`
