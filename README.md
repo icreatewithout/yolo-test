@@ -35,7 +35,8 @@ pip install -r requirements.txt
 python download_data/download_datasets.py --datasets risid deepfish \
   --proxy http://127.0.0.1:7890 \
   --proxy-scope all \
-  --require-foreign-egress
+  --require-foreign-egress \
+  --header-country US
 
 # 推荐提速：仅 API 走代理、文件直连（通常更快）
 python download_data/download_datasets.py --datasets risid deepfish plitter --proxy-scope api-only
@@ -51,7 +52,7 @@ python download_data/download_datasets.py --datasets risid deepfish \
   --url-override risid=https://zenodo.org/records/<id>/files/RiSID.zip?download=1 \
   --url-override deepfish=https://your-direct-url/deepfish.zip
 ```
-说明：若要求“请求发起地址是国外”，请使用 `--proxy-scope all --require-foreign-egress`。脚本会在启动时检测出口国家，若检测为 CN 会立即失败并提示切换节点。速度优化可用 `--proxy-scope api-only`、`--chunk-size-mb`、`--skip-discovery`。若任一数据集下载失败，脚本返回非 0 退出码，便于批处理/CI 感知失败。
+说明：默认会在 Header 中设置国家为 `US`（`--header-country` 可改）；若要求“请求发起地址是国外”，请使用 `--proxy-scope all --require-foreign-egress --header-country US`。脚本会在启动时检测出口国家，若检测为 CN 会立即失败并提示切换节点。速度优化可用 `--proxy-scope api-only`、`--chunk-size-mb`、`--skip-discovery`。若任一数据集下载失败，脚本返回非 0 退出码，便于批处理/CI 感知失败。
 
 下载后建议将可用样本统一整理为 YOLO 目录结构：
 - `dataset/images/train`

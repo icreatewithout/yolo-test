@@ -53,6 +53,20 @@ class DatasetDownloadError(RuntimeError):
     """Raised when a dataset cannot be downloaded from any candidate source."""
 
 
+def apply_geo_headers(session: requests.Session, country_code: str) -> None:
+    """Attach geo-preference headers to outbound requests (best-effort only)."""
+    cc = country_code.upper()
+    language = "en-US,en;q=0.9" if cc == "US" else "en;q=0.9"
+    session.headers.update(
+        {
+            "Accept-Language": language,
+            "X-Country-Code": cc,
+            "CF-IPCountry": cc,
+            "X-Geo-Country": cc,
+        }
+    )
+
+
 def build_session(proxy: str | None, use_proxy: bool, pool_size: int) -> requests.Session:
     session = requests.Session()
     adapter = HTTPAdapter(pool_connections=pool_size, pool_maxsize=pool_size)
@@ -313,6 +327,11 @@ def parse_args() -> argparse.Namespace:
         help="Proxy usage mode: all=everything via proxy, api-only=API via proxy + file direct, off=disable proxy",
     )
     parser.add_argument(
+        "--header-country",
+        default="US",
+        help="Set geo-related request headers to this country code (default: US)",
+    )
+    parser.add_argument(
         "--print-candidates",
         action="store_true",
         help="Print resolved candidate URLs and exit (for debugging broken sources)",
@@ -362,7 +381,11 @@ def main() -> None:
     apply_url_overrides(args.url_override)
 
     api_session, download_session, mode = pick_sessions(args.proxy, args.proxy_scope, args.pool_size)
+    apply_geo_headers(api_session, args.header_country)
+    if download_session is not api_session:
+        apply_geo_headers(download_session, args.header_country)
     print(f"[INFO] Proxy mode: {mode}")
+    print(f"[INFO] Request geo headers country: {args.header_country.upper()}")
 
     if args.require_foreign_egress:
         validate_foreign_egress(api_session, timeout=args.egress_check_timeout)
