@@ -44,6 +44,12 @@ python download_data/download_datasets.py --datasets risid deepfish plitter --pr
 # 完全禁用代理
 python download_data/download_datasets.py --datasets risid --proxy-scope off
 
+# 下载后自动收集数据集内视频到 videos/<dataset_name>/
+python download_data/download_datasets.py --datasets risid --videos-dir videos
+
+# 若数据集中没有视频，自动补一个演示视频到 videos/river_demo.mp4
+python download_data/download_datasets.py --datasets risid --download-demo-video
+
 # 打印候选地址并排查慢点（可跳过自动发现降低启动延迟）
 python download_data/download_datasets.py --datasets risid --print-candidates --skip-discovery
 
@@ -52,7 +58,7 @@ python download_data/download_datasets.py --datasets risid deepfish \
   --url-override risid=https://zenodo.org/records/<id>/files/RiSID.zip?download=1 \
   --url-override deepfish=https://your-direct-url/deepfish.zip
 ```
-说明：默认会在 Header 中设置国家为 `US`（`--header-country` 可改）；若要求“请求发起地址是国外”，请使用 `--proxy-scope all --require-foreign-egress --header-country US`。脚本会在启动时检测出口国家，若检测为 CN 会立即失败并提示切换节点。速度优化可用 `--proxy-scope api-only`、`--chunk-size-mb`、`--skip-discovery`。若任一数据集下载失败，脚本返回非 0 退出码，便于批处理/CI 感知失败。
+说明：默认会在 Header 中设置国家为 `US`（`--header-country` 可改）；若要求“请求发起地址是国外”，请使用 `--proxy-scope all --require-foreign-egress --header-country US`。脚本会在启动时检测出口国家，若检测为 CN 会立即失败并提示切换节点。速度优化可用 `--proxy-scope api-only`、`--chunk-size-mb`、`--skip-discovery`。脚本会自动将数据集内视频收集到 `videos/<dataset>/`；若使用 `--download-demo-video` 且未发现视频，会补充 `videos/river_demo.mp4`。若任一数据集下载失败，脚本返回非 0 退出码，便于批处理/CI 感知失败。
 
 下载后建议将可用样本统一整理为 YOLO 目录结构：
 - `dataset/images/train`

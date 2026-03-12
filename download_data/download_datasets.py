@@ -49,6 +49,11 @@ DATASET_SPECS = {
 }
 
 
+VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".m4v", ".flv", ".webm"}
+DEMO_VIDEO_URL = "https://raw.githubusercontent.com/mediaelement/mediaelement-files/master/big_buck_bunny.mp4"
+
+
+
 class DatasetDownloadError(RuntimeError):
     """Raised when a dataset cannot be downloaded from any candidate source."""
 
@@ -296,6 +301,49 @@ def download_dataset(
         zip_path.unlink(missing_ok=True)
 
 
+
+
+def collect_dataset_videos(extract_dir: Path, videos_root: Path, dataset_name: str) -> int:
+    videos_root.mkdir(parents=True, exist_ok=True)
+    target_root = videos_root / dataset_name
+    target_root.mkdir(parents=True, exist_ok=True)
+
+    found = 0
+    for path in extract_dir.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in VIDEO_EXTENSIONS:
+            continue
+
+        target = target_root / path.name
+        if target.exists():
+            stem = path.stem
+            suffix = path.suffix
+            i = 1
+            while True:
+                candidate = target_root / f"{stem}_{i}{suffix}"
+                if not candidate.exists():
+                    target = candidate
+                    break
+                i += 1
+
+        shutil.copy2(path, target)
+        found += 1
+
+    return found
+
+
+def download_demo_video_if_needed(
+    session: requests.Session,
+    videos_root: Path,
+    chunk_size: int,
+    timeout: int,
+) -> Path:
+    videos_root.mkdir(parents=True, exist_ok=True)
+    demo_path = videos_root / "river_demo.mp4"
+    if demo_path.exists():
+        return demo_path
+    download_file(session=session, url=DEMO_VIDEO_URL, destination=demo_path, chunk_size=chunk_size, timeout=timeout)
+    return demo_path
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Download open datasets for river dead-fish monitoring")
     parser.add_argument(
@@ -306,6 +354,7 @@ def parse_args() -> argparse.Namespace:
         help="Dataset aliases to download",
     )
     parser.add_argument("--output", default="dataset/raw", help="Output directory for raw downloads")
+    parser.add_argument("--videos-dir", default="videos", help="Directory to collect discovered videos")
     parser.add_argument("--keep-zip", action="store_true", help="Keep downloaded zip archives")
     parser.add_argument("--clean", action="store_true", help="Remove output directory before download")
     parser.add_argument(
@@ -353,6 +402,16 @@ def parse_args() -> argparse.Namespace:
         help="Timeout seconds for proxy egress verification",
     )
     parser.add_argument("--skip-discovery", action="store_true", help="Skip Zenodo discovery to reduce startup latency")
+    parser.add_argument(
+        "--no-collect-videos",
+        action="store_true",
+        help="Do not collect video files from extracted datasets into videos/",
+    )
+    parser.add_argument(
+        "--download-demo-video",
+        action="store_true",
+        help="Download a demo river-like MP4 into videos/ when datasets contain no videos",
+    )
     return parser.parse_args()
 
 
@@ -377,6 +436,7 @@ def apply_url_overrides(overrides: list[str]) -> None:
 def main() -> None:
     args = parse_args()
     output_root = Path(args.output)
+    videos_root = Path(args.videos_dir)
 
     apply_url_overrides(args.url_override)
 
@@ -418,6 +478,10 @@ def main() -> None:
                 api_timeout=args.api_timeout,
                 skip_discovery=args.skip_discovery,
             )
+            if not args.no_collect_videos:
+                extracted = output_root / dataset
+                video_count = collect_dataset_videos(extracted, videos_root, dataset)
+                print(f"[INFO] Collected {video_count} video file(s) from {dataset} into {videos_root / dataset}")
         except (requests.RequestException, zipfile.BadZipFile, DatasetDownloadError) as exc:
             failed.append(dataset)
             print(f"[ERROR] Failed to download {dataset}: {exc}")
@@ -425,6 +489,17 @@ def main() -> None:
     if failed:
         print(f"[ERROR] Dataset download failed: {', '.join(failed)}")
         sys.exit(1)
+
+    if args.download_demo_video and not args.no_collect_videos:
+        has_video = any(path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS for path in videos_root.rglob("*"))
+        if not has_video:
+            demo_path = download_demo_video_if_needed(
+                session=download_session,
+                videos_root=videos_root,
+                chunk_size=args.chunk_size_mb * 1024 * 1024,
+                timeout=args.download_timeout,
+            )
+            print(f"[INFO] No videos found in downloaded datasets; demo video saved to: {demo_path}")
 
 
 if __name__ == "__main__":
