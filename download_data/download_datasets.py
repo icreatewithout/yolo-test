@@ -52,9 +52,14 @@ class DatasetDownloadError(RuntimeError):
     """Raised when a dataset cannot be downloaded from any candidate source."""
 
 
-def download_file(url: str, destination: Path, chunk_size: int = 1024 * 1024) -> None:
+def download_file(
+    session: requests.Session,
+    url: str,
+    destination: Path,
+    chunk_size: int = 1024 * 1024,
+) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    response = requests.get(url, stream=True, timeout=120)
+    response = session.get(url, stream=True, timeout=120)
     response.raise_for_status()
 
     with destination.open("wb") as file:
@@ -91,14 +96,18 @@ def _collect_zenodo_zip_links(record_json: dict, filename_hints: list[str]) -> l
     return urls
 
 
-def resolve_zenodo_search_urls(queries: list[str], filename_hints: list[str]) -> list[str]:
+def resolve_zenodo_search_urls(
+    session: requests.Session,
+    queries: list[str],
+    filename_hints: list[str],
+) -> list[str]:
     discovered: list[str] = []
 
     for query in queries:
         endpoint = "https://zenodo.org/api/records/"
         params = {"q": query, "size": 10, "sort": "mostrecent"}
         try:
-            response = requests.get(endpoint, params=params, timeout=30)
+            response = session.get(endpoint, params=params, timeout=30)
             response.raise_for_status()
             payload = response.json()
         except requests.RequestException:
@@ -123,13 +132,14 @@ def resolve_zenodo_search_urls(queries: list[str], filename_hints: list[str]) ->
     return merged
 
 
-def _candidate_urls(dataset_name: str) -> list[str]:
+def _candidate_urls(session: requests.Session, dataset_name: str) -> list[str]:
     spec = DATASET_SPECS[dataset_name]
     urls = list(spec.get("urls", []))
 
     if spec.get("resolver") == "zenodo_search":
         urls.extend(
             resolve_zenodo_search_urls(
+                session=session,
                 queries=list(spec.get("queries", [])),
                 filename_hints=list(spec.get("filename_hints", [])),
             )
@@ -144,8 +154,13 @@ def _candidate_urls(dataset_name: str) -> list[str]:
     return merged
 
 
-def download_dataset(dataset_name: str, output_root: Path, keep_zip: bool = False) -> None:
-    candidate_urls = _candidate_urls(dataset_name)
+def download_dataset(
+    session: requests.Session,
+    dataset_name: str,
+    output_root: Path,
+    keep_zip: bool = False,
+) -> None:
+    candidate_urls = _candidate_urls(session, dataset_name)
     if not candidate_urls:
         raise DatasetDownloadError(
             f"No candidate URLs configured for '{dataset_name}'. "
@@ -159,7 +174,7 @@ def download_dataset(dataset_name: str, output_root: Path, keep_zip: bool = Fals
     for url in candidate_urls:
         print(f"[INFO] Downloading {dataset_name} from {url}")
         try:
-            download_file(url, zip_path)
+            download_file(session, url, zip_path)
             last_error = None
             break
         except requests.RequestException as exc:
@@ -200,6 +215,16 @@ def parse_args() -> argparse.Namespace:
         help="Override download URL, e.g. --url-override risid=https://.../RiSID.zip",
     )
     parser.add_argument(
+        "--proxy",
+        default="http://127.0.0.1:7890",
+        help="HTTP/HTTPS proxy URL, default: http://127.0.0.1:7890",
+    )
+    parser.add_argument(
+        "--no-proxy",
+        action="store_true",
+        help="Disable proxy usage even if --proxy is set",
+    )
+    parser.add_argument(
         "--print-candidates",
         action="store_true",
         help="Print resolved candidate URLs and exit (for debugging broken sources)",
@@ -225,16 +250,27 @@ def apply_url_overrides(overrides: list[str]) -> None:
         DATASET_SPECS[dataset]["urls"] = [url]
 
 
+def build_session(proxy: str | None, no_proxy: bool) -> requests.Session:
+    session = requests.Session()
+    if not no_proxy and proxy:
+        session.proxies.update({"http": proxy, "https": proxy})
+        print(f"[INFO] Using proxy: {proxy}")
+    else:
+        print("[INFO] Proxy disabled")
+    return session
+
+
 def main() -> None:
     args = parse_args()
     output_root = Path(args.output)
 
     apply_url_overrides(args.url_override)
+    session = build_session(args.proxy, args.no_proxy)
 
     if args.print_candidates:
         for dataset in args.datasets:
             print(f"[{dataset}] candidate URLs:")
-            for idx, url in enumerate(_candidate_urls(dataset), start=1):
+            for idx, url in enumerate(_candidate_urls(session, dataset), start=1):
                 print(f"  {idx}. {url}")
         return
 
@@ -245,7 +281,7 @@ def main() -> None:
     failed: list[str] = []
     for dataset in args.datasets:
         try:
-            download_dataset(dataset, output_root, keep_zip=args.keep_zip)
+            download_dataset(session, dataset, output_root, keep_zip=args.keep_zip)
         except (requests.RequestException, zipfile.BadZipFile, DatasetDownloadError) as exc:
             failed.append(dataset)
             print(f"[ERROR] Failed to download {dataset}: {exc}")
