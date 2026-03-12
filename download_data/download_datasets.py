@@ -1,9 +1,9 @@
 """Download publicly available fish-related datasets for river monitoring.
 
-This script uses resilient download strategies:
-- candidate URL fallback
-- optional Zenodo file discovery by record/search
-- runtime URL override without code changes
+Resilience features:
+- multi-candidate URL fallback
+- Zenodo API discovery for renamed/moved records
+- runtime --url-override without code edits
 - non-zero exit code when any selected dataset fails
 """
 
@@ -24,20 +24,32 @@ DATASET_SPECS = {
             "https://zenodo.org/records/15533743/files/RiSID.zip?download=1",
             "https://zenodo.org/record/15533743/files/RiSID.zip?download=1",
         ],
-        "resolver": "zenodo_risid",
+        "resolver": "zenodo_search",
+        "queries": ["RiSID", '"river" fish dataset'],
+        "filename_hints": ["risid"],
     },
     "deepfish": {
-        # Historical Roboflow public links frequently expire.
+        # Historical public direct links may expire; keep as first candidates.
         "urls": [
             "https://public.roboflow.com/ds/deepfish.zip",
         ],
+        "resolver": "zenodo_search",
+        "queries": ["DeepFish dataset", "deepfish fish detection"],
+        "filename_hints": ["deepfish"],
     },
     "plitter": {
         "urls": [
             "https://public.roboflow.com/ds/p-litter.zip",
         ],
+        "resolver": "zenodo_search",
+        "queries": ["pLitter dataset", "river litter dataset"],
+        "filename_hints": ["litter", "plitter"],
     },
 }
+
+
+class DatasetDownloadError(RuntimeError):
+    """Raised when a dataset cannot be downloaded from any candidate source."""
 
 
 def download_file(url: str, destination: Path, chunk_size: int = 1024 * 1024) -> None:
@@ -57,62 +69,72 @@ def extract_zip(zip_path: Path, output_dir: Path) -> None:
         zf.extractall(output_dir)
 
 
-def _collect_zenodo_urls(record_json: dict, filename_hint: str = "risid") -> list[str]:
+def _collect_zenodo_zip_links(record_json: dict, filename_hints: list[str]) -> list[str]:
+    hints = [hint.lower() for hint in filename_hints]
     urls: list[str] = []
+
     for file_entry in record_json.get("files", []):
         key = str(file_entry.get("key", "")).lower()
-        if filename_hint in key and key.endswith(".zip"):
-            links = file_entry.get("links", {})
-            for link_key in ("self", "download"):
-                link = links.get(link_key)
-                if link:
-                    urls.append(str(link))
+        if not key.endswith(".zip"):
+            continue
+
+        # If hints exist, prioritize matching files, otherwise accept all zip files.
+        if hints and not any(hint in key for hint in hints):
+            continue
+
+        links = file_entry.get("links", {})
+        for link_key in ("download", "self"):
+            link = links.get(link_key)
+            if link:
+                urls.append(str(link))
+
     return urls
 
 
-def resolve_zenodo_risid_urls() -> list[str]:
-    """Resolve RiSID zip URLs through Zenodo API for link-rot tolerance."""
+def resolve_zenodo_search_urls(queries: list[str], filename_hints: list[str]) -> list[str]:
     discovered: list[str] = []
 
-    # Try direct known record first.
-    endpoints = [
-        "https://zenodo.org/api/records/15533743",
-        "https://zenodo.org/api/records/?q=RiSID&size=5",
-    ]
-
-    for endpoint in endpoints:
+    for query in queries:
+        endpoint = "https://zenodo.org/api/records/"
+        params = {"q": query, "size": 10, "sort": "mostrecent"}
         try:
-            response = requests.get(endpoint, timeout=30)
+            response = requests.get(endpoint, params=params, timeout=30)
             response.raise_for_status()
             payload = response.json()
         except requests.RequestException:
             continue
 
-        if "hits" in payload:
-            for hit in payload.get("hits", {}).get("hits", []):
-                discovered.extend(_collect_zenodo_urls(hit, filename_hint="risid"))
-        else:
-            discovered.extend(_collect_zenodo_urls(payload, filename_hint="risid"))
+        for hit in payload.get("hits", {}).get("hits", []):
+            links = _collect_zenodo_zip_links(hit, filename_hints=filename_hints)
+            if links:
+                discovered.extend(links)
+                continue
 
-    # Deduplicate while keeping order.
-    ordered = []
+            # fallback: if no hint match, still keep zip links from same record
+            discovered.extend(_collect_zenodo_zip_links(hit, filename_hints=[]))
+
+    # Deduplicate while preserving order.
+    merged: list[str] = []
     seen = set()
     for url in discovered:
         if url not in seen:
             seen.add(url)
-            ordered.append(url)
-    return ordered
+            merged.append(url)
+    return merged
 
 
 def _candidate_urls(dataset_name: str) -> list[str]:
     spec = DATASET_SPECS[dataset_name]
     urls = list(spec.get("urls", []))
 
-    resolver = spec.get("resolver")
-    if resolver == "zenodo_risid":
-        urls.extend(resolve_zenodo_risid_urls())
+    if spec.get("resolver") == "zenodo_search":
+        urls.extend(
+            resolve_zenodo_search_urls(
+                queries=list(spec.get("queries", [])),
+                filename_hints=list(spec.get("filename_hints", [])),
+            )
+        )
 
-    # Deduplicate while preserving order.
     merged: list[str] = []
     seen = set()
     for url in urls:
@@ -125,7 +147,7 @@ def _candidate_urls(dataset_name: str) -> list[str]:
 def download_dataset(dataset_name: str, output_root: Path, keep_zip: bool = False) -> None:
     candidate_urls = _candidate_urls(dataset_name)
     if not candidate_urls:
-        raise requests.RequestException(
+        raise DatasetDownloadError(
             f"No candidate URLs configured for '{dataset_name}'. "
             "Use --url-override DATASET=URL."
         )
@@ -146,7 +168,7 @@ def download_dataset(dataset_name: str, output_root: Path, keep_zip: bool = Fals
             print(f"[WARN] Download failed from {url}: {exc}")
 
     if last_error is not None:
-        raise requests.RequestException(
+        raise DatasetDownloadError(
             f"All candidate URLs failed for '{dataset_name}'. "
             "Use --url-override to provide a verified direct download URL."
         ) from last_error
@@ -177,6 +199,11 @@ def parse_args() -> argparse.Namespace:
         metavar="DATASET=URL",
         help="Override download URL, e.g. --url-override risid=https://.../RiSID.zip",
     )
+    parser.add_argument(
+        "--print-candidates",
+        action="store_true",
+        help="Print resolved candidate URLs and exit (for debugging broken sources)",
+    )
     return parser.parse_args()
 
 
@@ -204,6 +231,13 @@ def main() -> None:
 
     apply_url_overrides(args.url_override)
 
+    if args.print_candidates:
+        for dataset in args.datasets:
+            print(f"[{dataset}] candidate URLs:")
+            for idx, url in enumerate(_candidate_urls(dataset), start=1):
+                print(f"  {idx}. {url}")
+        return
+
     if args.clean and output_root.exists():
         print(f"[INFO] Cleaning existing directory: {output_root}")
         shutil.rmtree(output_root)
@@ -212,7 +246,7 @@ def main() -> None:
     for dataset in args.datasets:
         try:
             download_dataset(dataset, output_root, keep_zip=args.keep_zip)
-        except (requests.RequestException, zipfile.BadZipFile) as exc:
+        except (requests.RequestException, zipfile.BadZipFile, DatasetDownloadError) as exc:
             failed.append(dataset)
             print(f"[ERROR] Failed to download {dataset}: {exc}")
 
