@@ -4,6 +4,7 @@ Resilience features:
 - multi-candidate URL fallback
 - Zenodo API discovery for renamed/moved records
 - runtime --url-override without code edits
+- proxy scope control for better throughput
 - non-zero exit code when any selected dataset fails
 """
 
@@ -16,6 +17,7 @@ import zipfile
 from pathlib import Path
 
 import requests
+from requests.adapters import HTTPAdapter
 
 
 DATASET_SPECS = {
@@ -29,7 +31,6 @@ DATASET_SPECS = {
         "filename_hints": ["risid"],
     },
     "deepfish": {
-        # Historical public direct links may expire; keep as first candidates.
         "urls": [
             "https://public.roboflow.com/ds/deepfish.zip",
         ],
@@ -52,14 +53,42 @@ class DatasetDownloadError(RuntimeError):
     """Raised when a dataset cannot be downloaded from any candidate source."""
 
 
+def build_session(proxy: str | None, use_proxy: bool, pool_size: int) -> requests.Session:
+    session = requests.Session()
+    adapter = HTTPAdapter(pool_connections=pool_size, pool_maxsize=pool_size)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+
+    if use_proxy and proxy:
+        session.proxies.update({"http": proxy, "https": proxy})
+    return session
+
+
+def pick_sessions(proxy: str, proxy_scope: str, pool_size: int) -> tuple[requests.Session, requests.Session, str]:
+    """Return (api_session, download_session, human_readable_mode)."""
+    if proxy_scope == "off":
+        direct = build_session(proxy=None, use_proxy=False, pool_size=pool_size)
+        return direct, direct, "proxy disabled (all direct)"
+
+    if proxy_scope == "api-only":
+        api_session = build_session(proxy=proxy, use_proxy=True, pool_size=pool_size)
+        download_session = build_session(proxy=None, use_proxy=False, pool_size=pool_size)
+        return api_session, download_session, "API via proxy, file download direct"
+
+    # all
+    proxied = build_session(proxy=proxy, use_proxy=True, pool_size=pool_size)
+    return proxied, proxied, f"all requests via proxy {proxy}"
+
+
 def download_file(
     session: requests.Session,
     url: str,
     destination: Path,
-    chunk_size: int = 1024 * 1024,
+    chunk_size: int,
+    timeout: int,
 ) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    response = session.get(url, stream=True, timeout=120)
+    response = session.get(url, stream=True, timeout=timeout)
     response.raise_for_status()
 
     with destination.open("wb") as file:
@@ -83,7 +112,6 @@ def _collect_zenodo_zip_links(record_json: dict, filename_hints: list[str]) -> l
         if not key.endswith(".zip"):
             continue
 
-        # If hints exist, prioritize matching files, otherwise accept all zip files.
         if hints and not any(hint in key for hint in hints):
             continue
 
@@ -100,6 +128,7 @@ def resolve_zenodo_search_urls(
     session: requests.Session,
     queries: list[str],
     filename_hints: list[str],
+    api_timeout: int,
 ) -> list[str]:
     discovered: list[str] = []
 
@@ -107,7 +136,7 @@ def resolve_zenodo_search_urls(
         endpoint = "https://zenodo.org/api/records/"
         params = {"q": query, "size": 10, "sort": "mostrecent"}
         try:
-            response = session.get(endpoint, params=params, timeout=30)
+            response = session.get(endpoint, params=params, timeout=api_timeout)
             response.raise_for_status()
             payload = response.json()
         except requests.RequestException:
@@ -118,11 +147,8 @@ def resolve_zenodo_search_urls(
             if links:
                 discovered.extend(links)
                 continue
-
-            # fallback: if no hint match, still keep zip links from same record
             discovered.extend(_collect_zenodo_zip_links(hit, filename_hints=[]))
 
-    # Deduplicate while preserving order.
     merged: list[str] = []
     seen = set()
     for url in discovered:
@@ -132,16 +158,22 @@ def resolve_zenodo_search_urls(
     return merged
 
 
-def _candidate_urls(session: requests.Session, dataset_name: str) -> list[str]:
+def _candidate_urls(
+    api_session: requests.Session,
+    dataset_name: str,
+    api_timeout: int,
+    skip_discovery: bool,
+) -> list[str]:
     spec = DATASET_SPECS[dataset_name]
     urls = list(spec.get("urls", []))
 
-    if spec.get("resolver") == "zenodo_search":
+    if not skip_discovery and spec.get("resolver") == "zenodo_search":
         urls.extend(
             resolve_zenodo_search_urls(
-                session=session,
+                session=api_session,
                 queries=list(spec.get("queries", [])),
                 filename_hints=list(spec.get("filename_hints", [])),
+                api_timeout=api_timeout,
             )
         )
 
@@ -155,12 +187,17 @@ def _candidate_urls(session: requests.Session, dataset_name: str) -> list[str]:
 
 
 def download_dataset(
-    session: requests.Session,
+    api_session: requests.Session,
+    download_session: requests.Session,
     dataset_name: str,
     output_root: Path,
-    keep_zip: bool = False,
+    keep_zip: bool,
+    chunk_size: int,
+    download_timeout: int,
+    api_timeout: int,
+    skip_discovery: bool,
 ) -> None:
-    candidate_urls = _candidate_urls(session, dataset_name)
+    candidate_urls = _candidate_urls(api_session, dataset_name, api_timeout, skip_discovery)
     if not candidate_urls:
         raise DatasetDownloadError(
             f"No candidate URLs configured for '{dataset_name}'. "
@@ -174,7 +211,13 @@ def download_dataset(
     for url in candidate_urls:
         print(f"[INFO] Downloading {dataset_name} from {url}")
         try:
-            download_file(session, url, zip_path)
+            download_file(
+                session=download_session,
+                url=url,
+                destination=zip_path,
+                chunk_size=chunk_size,
+                timeout=download_timeout,
+            )
             last_error = None
             break
         except requests.RequestException as exc:
@@ -220,15 +263,21 @@ def parse_args() -> argparse.Namespace:
         help="HTTP/HTTPS proxy URL, default: http://127.0.0.1:7890",
     )
     parser.add_argument(
-        "--no-proxy",
-        action="store_true",
-        help="Disable proxy usage even if --proxy is set",
+        "--proxy-scope",
+        choices=["all", "api-only", "off"],
+        default="api-only",
+        help="Proxy usage mode: all=everything via proxy, api-only=API via proxy + file direct, off=disable proxy",
     )
     parser.add_argument(
         "--print-candidates",
         action="store_true",
         help="Print resolved candidate URLs and exit (for debugging broken sources)",
     )
+    parser.add_argument("--chunk-size-mb", type=int, default=4, help="Download stream chunk size in MB (default 4)")
+    parser.add_argument("--download-timeout", type=int, default=120, help="Download request timeout seconds")
+    parser.add_argument("--api-timeout", type=int, default=30, help="Zenodo API request timeout seconds")
+    parser.add_argument("--pool-size", type=int, default=16, help="HTTP connection pool size")
+    parser.add_argument("--skip-discovery", action="store_true", help="Skip Zenodo discovery to reduce startup latency")
     return parser.parse_args()
 
 
@@ -250,27 +299,22 @@ def apply_url_overrides(overrides: list[str]) -> None:
         DATASET_SPECS[dataset]["urls"] = [url]
 
 
-def build_session(proxy: str | None, no_proxy: bool) -> requests.Session:
-    session = requests.Session()
-    if not no_proxy and proxy:
-        session.proxies.update({"http": proxy, "https": proxy})
-        print(f"[INFO] Using proxy: {proxy}")
-    else:
-        print("[INFO] Proxy disabled")
-    return session
-
-
 def main() -> None:
     args = parse_args()
     output_root = Path(args.output)
 
     apply_url_overrides(args.url_override)
-    session = build_session(args.proxy, args.no_proxy)
+
+    api_session, download_session, mode = pick_sessions(args.proxy, args.proxy_scope, args.pool_size)
+    print(f"[INFO] Proxy mode: {mode}")
 
     if args.print_candidates:
         for dataset in args.datasets:
             print(f"[{dataset}] candidate URLs:")
-            for idx, url in enumerate(_candidate_urls(session, dataset), start=1):
+            for idx, url in enumerate(
+                _candidate_urls(api_session, dataset, args.api_timeout, args.skip_discovery),
+                start=1,
+            ):
                 print(f"  {idx}. {url}")
         return
 
@@ -281,7 +325,17 @@ def main() -> None:
     failed: list[str] = []
     for dataset in args.datasets:
         try:
-            download_dataset(session, dataset, output_root, keep_zip=args.keep_zip)
+            download_dataset(
+                api_session=api_session,
+                download_session=download_session,
+                dataset_name=dataset,
+                output_root=output_root,
+                keep_zip=args.keep_zip,
+                chunk_size=args.chunk_size_mb * 1024 * 1024,
+                download_timeout=args.download_timeout,
+                api_timeout=args.api_timeout,
+                skip_discovery=args.skip_discovery,
+            )
         except (requests.RequestException, zipfile.BadZipFile, DatasetDownloadError) as exc:
             failed.append(dataset)
             print(f"[ERROR] Failed to download {dataset}: {exc}")

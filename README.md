@@ -31,23 +31,27 @@ pip install -r requirements.txt
 ## 3. 下载公开数据
 
 ```bash
-# 默认通过代理 http://127.0.0.1:7890 下载
-python download_data/download_datasets.py --datasets risid
-# 或多个
-python download_data/download_datasets.py --datasets risid deepfish plitter
-# 指定代理（例如本地 clash/v2ray）
-python download_data/download_datasets.py --datasets risid --proxy http://127.0.0.1:7890
-# 如需禁用代理
-python download_data/download_datasets.py --datasets risid --no-proxy
-# 调试当前解析出的候选地址（含 Zenodo 自动发现）
-python download_data/download_datasets.py --datasets risid deepfish --print-candidates
+# 推荐：API 走代理、文件直连（通常比全量代理更快）
+python download_data/download_datasets.py --datasets risid --proxy-scope api-only
+
+# 多个数据集
+python download_data/download_datasets.py --datasets risid deepfish plitter --proxy-scope api-only
+
+# 全量走代理（当直连被限制时）
+python download_data/download_datasets.py --datasets risid --proxy-scope all --proxy http://127.0.0.1:7890
+
+# 完全禁用代理
+python download_data/download_datasets.py --datasets risid --proxy-scope off
+
+# 打印候选地址并排查慢点（可跳过自动发现降低启动延迟）
+python download_data/download_datasets.py --datasets risid --print-candidates --skip-discovery
+
 # 若公开链接变更，可覆盖下载地址（可重复传入）
-python download_data/download_datasets.py --datasets risid deepfish \
-  --url-override risid=https://zenodo.org/records/<id>/files/RiSID.zip?download=1 \
+python download_data/download_datasets.py --datasets risid deepfish \\
+  --url-override risid=https://zenodo.org/records/<id>/files/RiSID.zip?download=1 \\
   --url-override deepfish=https://your-direct-url/deepfish.zip
 ```
-
-说明：脚本默认使用 `http://127.0.0.1:7890` 代理，可用 `--proxy` 修改或 `--no-proxy` 禁用；会自动检索 Zenodo 最新候选文件链接；若任一数据集下载失败，将返回非 0 退出码，便于批处理/CI 感知失败。
+说明：默认 `--proxy-scope api-only`（API 走代理、文件直连）可显著改善“代理下载慢”；可通过 `--proxy-scope all/off` 切换。另支持 `--chunk-size-mb`、`--skip-discovery` 调优速度。若任一数据集下载失败，脚本返回非 0 退出码，便于批处理/CI 感知失败。
 
 下载后建议将可用样本统一整理为 YOLO 目录结构：
 - `dataset/images/train`
