@@ -34,10 +34,13 @@ pip install -r requirements.txt
 python download_data/download_datasets.py --datasets risid
 # 或多个
 python download_data/download_datasets.py --datasets risid deepfish plitter
-# 若公开链接变更，可覆盖下载地址
-python download_data/download_datasets.py --datasets risid \
-  --url-override risid=https://zenodo.org/record/15533743/files/RiSID.zip
+# 若公开链接变更，可覆盖下载地址（可重复传入）
+python download_data/download_datasets.py --datasets risid deepfish \
+  --url-override risid=https://zenodo.org/records/<id>/files/RiSID.zip?download=1 \
+  --url-override deepfish=https://your-direct-url/deepfish.zip
 ```
+
+说明：脚本会在任一数据集下载失败时返回非 0 退出码，便于批处理/CI 感知失败。
 
 下载后建议将可用样本统一整理为 YOLO 目录结构：
 - `dataset/images/train`
