@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>River Dead Fish Monitoring</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; background: #f5f7fb; }
+    .cards { display: grid; grid-template-columns: repeat(3, minmax(160px, 220px)); gap: 12px; }
+    .card { background: white; border-radius: 10px; padding: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+    .num { font-size: 30px; color: #1167d8; }
+  </style>
+</head>
+<body>
+  <h1>River Dead Fish Monitoring Dashboard</h1>
+  <div class="cards">
+    <div class="card"><h3>Dead Fish</h3><div class="num" id="dead_fish">-</div></div>
+    <div class="card"><h3>Live Fish</h3><div class="num" id="live_fish">-</div></div>
+    <div class="card"><h3>Floating Object</h3><div class="num" id="floating_object">-</div></div>
+  </div>
+
+  <script>
+    async function refresh() {
+      const res = await fetch('/api/metrics');
+      const data = await res.json();
+      document.getElementById('dead_fish').innerText = data.latest.dead_fish;
+      document.getElementById('live_fish').innerText = data.latest.live_fish;
+      document.getElementById('floating_object').innerText = data.latest.floating_object;
+    }
+    setInterval(refresh, 2000);
+    refresh();
+  </script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+path: dataset
+train: images/train
+val: images/val
+names:
+  0: dead_fish
+  1: live_fish
+  2: floating_object
