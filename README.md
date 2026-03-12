@@ -34,6 +34,9 @@ pip install -r requirements.txt
 python download_data/download_datasets.py --datasets risid
 # 或多个
 python download_data/download_datasets.py --datasets risid deepfish plitter
+# 若公开链接变更，可覆盖下载地址
+python download_data/download_datasets.py --datasets risid \
+  --url-override risid=https://zenodo.org/record/15533743/files/RiSID.zip
 ```
 
 下载后建议将可用样本统一整理为 YOLO 目录结构：

@@ -16,10 +16,15 @@ import requests
 
 
 DATASET_URLS = {
-    "risid": "https://zenodo.org/record/15533743/files/RiSID.zip",
+    # Some hosting providers periodically change record/file paths. We keep
+    # multiple candidates and try them in order.
+    "risid": [
+        "https://zenodo.org/record/15533743/files/RiSID.zip",
+        "https://zenodo.org/records/15533743/files/RiSID.zip",
+    ],
     # Placeholder public references; replace with latest URLs if mirrors change.
-    "deepfish": "https://public.roboflow.com/ds/deepfish.zip",
-    "plitter": "https://public.roboflow.com/ds/p-litter.zip",
+    "deepfish": ["https://public.roboflow.com/ds/deepfish.zip"],
+    "plitter": ["https://public.roboflow.com/ds/p-litter.zip"],
 }
 
 
@@ -41,12 +46,28 @@ def extract_zip(zip_path: Path, output_dir: Path) -> None:
 
 
 def download_dataset(dataset_name: str, output_root: Path, keep_zip: bool = False) -> None:
-    url = DATASET_URLS[dataset_name]
+    candidate_urls = DATASET_URLS[dataset_name]
     zip_path = output_root / f"{dataset_name}.zip"
     extract_dir = output_root / dataset_name
 
-    print(f"[INFO] Downloading {dataset_name} from {url}")
-    download_file(url, zip_path)
+    last_error: Exception | None = None
+    for url in candidate_urls:
+        print(f"[INFO] Downloading {dataset_name} from {url}")
+        try:
+            download_file(url, zip_path)
+            last_error = None
+            break
+        except requests.RequestException as exc:
+            last_error = exc
+            zip_path.unlink(missing_ok=True)
+            print(f"[WARN] Download failed from {url}: {exc}")
+
+    if last_error is not None:
+        raise requests.RequestException(
+            f"All candidate URLs failed for '{dataset_name}'. "
+            "Use --url-override to provide a verified direct download URL."
+        ) from last_error
+
     print(f"[INFO] Extracting {zip_path} -> {extract_dir}")
     extract_zip(zip_path, extract_dir)
 
@@ -66,12 +87,39 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", default="dataset/raw", help="Output directory for raw downloads")
     parser.add_argument("--keep-zip", action="store_true", help="Keep downloaded zip archives")
     parser.add_argument("--clean", action="store_true", help="Remove output directory before download")
+    parser.add_argument(
+        "--url-override",
+        action="append",
+        default=[],
+        metavar="DATASET=URL",
+        help="Override download URL, e.g. --url-override risid=https://.../RiSID.zip",
+    )
     return parser.parse_args()
+
+
+def apply_url_overrides(overrides: list[str]) -> None:
+    for item in overrides:
+        if "=" not in item:
+            raise ValueError(f"Invalid --url-override '{item}'. Expected DATASET=URL format.")
+
+        dataset, url = item.split("=", 1)
+        dataset = dataset.strip()
+        url = url.strip()
+
+        if dataset not in DATASET_URLS:
+            raise ValueError(f"Unknown dataset in --url-override: '{dataset}'")
+
+        if not url:
+            raise ValueError(f"Empty URL for --url-override '{item}'")
+
+        DATASET_URLS[dataset] = [url]
 
 
 def main() -> None:
     args = parse_args()
     output_root = Path(args.output)
+
+    apply_url_overrides(args.url_override)
 
     if args.clean and output_root.exists():
         print(f"[INFO] Cleaning existing directory: {output_root}")
